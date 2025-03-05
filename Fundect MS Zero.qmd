@@ -1,0 +1,1563 @@
+---
+title: "MS Carbono Zero - Uso da Terra, Mudança do Uso da Terra e Florestas"
+date: 2025-02-25
+author:
+  - name: Fernando Rodrigues Teixeira Dias
+    orcid: 0000-0002-3739-0036
+    corresponding: true
+    email: fernando.dias@embrapa.br
+    roles:
+      - Investigation
+      - Software
+      - Writing
+    affiliations:
+      - Embrapa
+  - name: Guilherme Malafaia
+    roles:
+      - Supervision
+    affiliations:
+      - Embrapa
+keywords: 
+  - Mato Grosso do Sul
+  - Carbono Zero
+  - Fundect
+plain-language-summary: Ver Resumo.
+key-points:
+  - Estimativa de emissões e remoções de gases de efeito estufa por uso da terra, mudança do uso da terra e florestas para as Zonas Econômicas e Ecológicas do estado do Mato Grosso do Sul (ZEE-MS), usando as estimativas do IV Inventário Nacional para o período 1994 a 2016 e redistribuindo os fatores médios de emissão líquida (GgCO2eq/ha/ano) às ZEE-MS. Um resultado adicional à aplicação destes fatores médios a um mapeamento próprio de mudança de uso da terra do Mato Grosso do Sul de 2001 e 2021, agregado em número menor de classes de uso (6, contra 26 do Quarto Inventário). Resultados incluem a estimativa da incerteza nas emissões totais que é acrescentada pelo método.
+ 
+citation:
+  container-title: Earth System Science
+number-sections: true
+crossref:
+  chapters: true
+execute:
+  enabled: true
+  echo: false
+  eval: true
+  output: false
+  warning: true
+  error: true
+format:
+  html:
+    code-fold: true
+ipynb-shell-interactivity: all
+toc: true
+toc-depth: 2
+jupyter: python3
+filters:
+  - abstract-section
+editor:
+  markdown:
+    wrap: none
+bibliography: references.bib
+---
+
+# Apêndice
+
+Este artigo foi elaborado como um Quarto Document. Para (re)produzir as tabelas, gráficos e quaisquer outros resultados do artigo a partir das fontes de dados originais, é preciso executar o código Python deste apêndice, bem como as recomendações de "download" de arquivos e preparação do ambiente.
+
+## Preparação
+
+### Instalação do ambiente
+
+\<\<...\>\>
+
+### Instalação de bibliotecas Python
+
+\<\<...\>\>
+
+### Carregando bibliotecas Python
+
+O código a seguir carrega as bibliotecas Python necessárias.
+
+```{python}
+import time
+from datetime import datetime
+
+import os
+from pathlib import Path
+import glob
+import zipfile
+import shutil
+
+import pandas as pd
+import numpy as np
+
+import geopandas as gpd
+from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
+from shapely.validation import make_valid
+import pyogrio
+import pyarrow
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap 
+from matplotlib.patches import Patch
+
+from scipy.interpolate import interp1d
+
+from IPython.display import display
+```
+
+### Funções de uso geral
+
+Neste tópico declaramos funções usadas em mais de um tópíco.
+
+#### "Flag" para imprimir validações diversas
+
+```{python}
+verbose = True
+```
+
+#### Valida e corrige geometrias
+
+Função para validar e corrigir geometrias.
+
+```{python}
+def fix_geoms(gdf):
+
+  # FALTA INCLUIR RETURN e PRINT COM QTDE DE REGISTROS LIDOS, CORRIGIDOS, E INVÁLIDOS.
+
+  mask_invalid = ~gdf.geometry.is_valid
+
+  if (n1 := len(gdf[mask_invalid])) == 0:
+    if verbose: print(f"Todas as {len(gdf)} geometrias são válidas, às {datetime.now().strftime("%H:%M:%S")}.")
+
+  else:
+    gdf.loc[mask_invalid, 'geometry'] = gdf.loc[mask_invalid, 'geometry'].apply(lambda geom: make_valid(geom))
+    mask_invalid = ~gdf.geometry.is_valid
+    if (n2 := len(gdf[mask_invalid])) == 0:
+      if verbose: print(f"Todas as {len(gdf)} geometrias agora são válidas, inclusise as {n1} inicialmente não válidas, às {datetime.now().strftime("%H:%M:%S")}.")
+    else:
+      if verbose: print(f"Das {len(gdf)} geometrias, {n1} inicialmwente não válidas, {n2} geometrias ainda não são válidas, às {datetime.now().strftime("%H:%M:%S")}.")
+```
+
+### Interseção usando chave:
+
+Esta função realiza interseção otimizada por uma chave comum que isole as geometrias.
+
+```{python}
+def key_intersection(gdf1, gdf2, isolation_key):
+
+  gdf1_keys = gdf1[isolation_key].drop_duplicates().values.tolist()
+  if verbose: print('gdf1_keys', gdf1_keys)
+
+  intersection_gdf = {}
+
+  for key1 in gdf1_keys:
+    group1 = gdf1.copy().reset_index()
+    group2 = gdf2.copy().reset_index()
+
+    for i, k1 in enumerate(isolation_key):
+      group1 = group1[group1[k1] == key1[i]]
+      group2 = group2[group2[k1] == key1[i]]
+
+    if not group2.empty:
+
+      by_columns = [col for col in group1.columns if col != 'geometry']
+      if verbose: print('by_columns', by_columns)
+      if verbose: print('group1 antes', group1.head())
+      group1 = group1.dissolve(by=by_columns).reset_index()
+      if verbose: print('group1 depois', group1.head())
+      fix_geoms(group1)
+      group1.sindex
+      by_columns = [col for col in group2.columns if col != 'geometry']
+      group2 = group2.dissolve(by=by_columns).reset_index()
+      fix_geoms(group2)
+      group2.sindex
+      intersection = gpd.overlay(group1, group2, how='intersection', keep_geom_type=True)      
+      intersection = intersection[~intersection.is_empty]
+
+      if len(intersection) != 0:
+        fix_geoms(intersection)
+        intersection.sindex
+        if verbose: print(key1, len(intersection), f"às {datetime.now().strftime('%H:%M:%S')}.")        
+        intersection_gdf[tuple(key1)] = intersection
+
+  return pd.concat(intersection_gdf.values(), ignore_index=True)
+```
+
+## Obtendo as emissões do Quarto Inventário Nacional para o Mato Grosso do Sul
+
+Neste tópico carregamos os dados de emissões do Quarto Inventário Nacional para o Mato Grosso do Sul em cada um dos três biomas que ocorre no MS, selecionando as colunas de interesse:
+
+```{python}
+gdfs = []
+category_cols = ['bioma', 'mun_geocod', 'cagr_1994', 'cagr_2002', 'cagr_2010', 'cagr_2016']
+value_cols = ['el_9402',	'el_0210', 'el_1016', 'area_ha']
+
+file_path = r"D:\CiCarne\FUNDECT_MS_ZERO\Quarto Inventário Nacional\downloads\Shapes_UF\Produtos_MS_"
+
+for bioma in ['Cerrado', 'Mata_Atlantica', 'Pantanal']:
+  gdf = gpd.read_file(file_path + bioma + '.shp', 
+    engine="pyogrio", use_arrow=True, encoding="latin1")
+
+  if 'num_geocod' in gdf.columns: 
+    gdf = gdf.rename(columns={'num_geocod': 'mun_geocod'})
+    
+  gdf = gdf[category_cols + value_cols + ['geometry']]
+  for col in category_cols: gdf[col] = gdf[col].astype('category')
+  for col in value_cols: gdf[col] = gdf[col].astype(float)
+
+  gdfs.append(gdf)
+
+gdf = pd.concat(gdfs, ignore_index = True)
+fix_geoms(gdf)
+```
+
+### Acrescentando as classes do IPCC
+
+Acrescentamos as seis classes do IPCC correspondentes às 26 classes usadas pelo Quarto Inventário Nacional.
+
+```{python}
+ipcc_group = pd.DataFrame([
+  {'ipccgr': 'Floresta', 'cagr': 'FNM'}, 
+  {'ipccgr': 'Floresta', 'cagr': 'FM'}, 
+  {'ipccgr': 'Floresta', 'cagr': 'FSec'}, 
+  {'ipccgr': 'Floresta', 'cagr': 'Ref'}, 
+  {'ipccgr': 'Floresta', 'cagr': 'CS'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'OFLNM'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'OFLM'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'OFLSec'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'GNM'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'GM'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'GSec'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'Ap'}, 
+  {'ipccgr': 'Campo ou Pastagem', 'cagr': 'APD'}, 
+  {'ipccgr': 'Agricultura', 'cagr': 'Ac'}, 
+  {'ipccgr': 'Agricultura', 'cagr': 'PER'}, 
+  {'ipccgr': 'Agricultura', 'cagr': 'CANA'}, 
+  {'ipccgr': 'Área construída', 'cagr': 'S'}, 
+  {'ipccgr': 'Áreas alagadas', 'cagr': 'A'}, 
+  {'ipccgr': 'Áreas alagadas', 'cagr': 'Res'}, 
+  {'ipccgr': 'Outros', 'cagr': 'DnNM'}, 
+  {'ipccgr': 'Outros', 'cagr': 'DnM'}, 
+  {'ipccgr': 'Outros', 'cagr': 'ArNM'}, 
+  {'ipccgr': 'Outros', 'cagr': 'ArM'}, 
+  {'ipccgr': 'Outros', 'cagr': 'Min'}, 
+  {'ipccgr': 'Outros', 'cagr': 'SE'}, 
+  {'ipccgr': 'Outros', 'cagr': 'NO'}])
+
+for col in ipcc_group.columns: ipcc_group[col] = ipcc_group[col].astype('category') 
+
+ipcc_merge = ipcc_group.rename(columns={'cagr': 'cagr_2016', 'ipccgr': 'ipccgr_2016'})
+gdf = pd.merge(gdf, ipcc_merge, on='cagr_2016')
+ipcc_merge = ipcc_group.rename(columns={'cagr': 'cagr_2010', 'ipccgr': 'ipccgr_2010'})
+gdf = pd.merge(gdf, ipcc_merge, on='cagr_2010')
+ipcc_merge = ipcc_group.rename(columns={'cagr': 'cagr_2002', 'ipccgr': 'ipccgr_2002'})
+gdf = pd.merge(gdf, ipcc_merge, on='cagr_2002')
+ipcc_merge = ipcc_group.rename(columns={'cagr': 'cagr_1994', 'ipccgr': 'ipccgr_1994'})
+gdf = pd.merge(gdf, ipcc_merge, on='cagr_1994')
+```
+
+```{python}
+# Conferindo totais do MS: produzimos uma tabela semelhante a planilhas do Quarto Inventário para o MS, período de 2010-2016, apenas para teste da leitura bem sucedida dos "shapefiles".
+if verbose:
+  def in_format(x):
+      if pd.isna(x) or x == 0: return ''
+      else: return "{:,.1f}".format(x/1e3)
+
+  for col in ['el_1016', 'area_ha']:
+    print(gdf.pivot_table(
+      values=col, 
+      index=['ipccgr_2010', 'cagr_2010'], 
+      columns=['ipccgr_2016', 'cagr_2016'], 
+      aggfunc='sum',
+      margins=True,
+      margins_name='Total',
+      observed=True)
+    .map(in_format))
+```
+
+### Calculando os fatores de emissão
+
+Aqui calculamos os fatores de emissão médios anuais por ha para cada registro lido do Quarto Inventário Nacional:
+
+```{python}
+gdf['fe_1016'] = gdf['el_1016'] / gdf['area_ha'] / (2016-2010)   
+gdf['fe_0210'] = gdf['el_0210'] / gdf['area_ha'] / (2010-2002)  
+gdf['fe_9402'] = gdf['el_9402'] / gdf['area_ha'] / (2002-1994)  
+gdf.to_file(r"Resultados\MS_products_gdf.gpkg", driver="GPKG")
+MS_products_gdf = gdf.copy()
+```
+
+## Registos no Quarto Inventário não atribuídos a Municípios
+
+Há alguns poucos registros (polígonos) do Quarto Inventário Nacional para o MS sem a identificação do município, isto é, com 'mun_geocod' não informado:
+
+```{python}
+MS_products_gdf = gpd.read_file(r"Resultados\MS_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+```
+
+```{python}
+no_mun_geocod = (MS_products_gdf['mun_geocod'] == '0') | MS_products_gdf['mun_geocod'].isna()
+
+summary = pd.DataFrame(
+  [
+    {
+      'area_ha': MS_products_gdf['area_ha'].sum(),
+      'el_1016': MS_products_gdf['el_1016'].sum(),
+      'el_0210': MS_products_gdf['el_0210'].sum(),
+      'el_9402': MS_products_gdf['el_9402'].sum()
+    },
+    {
+      'area_ha': MS_products_gdf[no_mun_geocod]['area_ha'].sum(),
+      'el_1016': MS_products_gdf[no_mun_geocod]['el_1016'].sum(),
+      'el_0210': MS_products_gdf[no_mun_geocod]['el_0210'].sum(),
+      'el_9402': MS_products_gdf[no_mun_geocod]['el_9402'].sum()
+    }
+  ],
+  index=['todos', 'sem município']
+).apply(lambda x: x/1e3)
+
+summary.loc['porcentagem'] = (summary.loc['sem município'] / summary.loc['todos'] * 100)
+summary.map("{:,.3f}".format)
+```
+
+Selecionamos apenas os registros com código válido de município para como um resultado intermediário. Além disso, CRS atual no Quarto Inventário é geográfico, e estimamos uma CRS adequada para projeções e cálculo de área para as próximas etapas, mas mantendo as áreas informadas no Quarto Inventário para efeito de estimativa dos fatores de emissão média em cada área. Alguns polígonos precisaram ser corrigidos após estes ajustes.
+
+```{python}
+gdf = MS_products_gdf[~no_mun_geocod]
+
+if verbose: print ('CRS disponível nos arquivos "shapefile" do Quarto Inventário Nacional:', gdf.crs)
+estimated_crs = gdf.estimate_utm_crs()
+
+if verbose: print('CRS estimada para o MS para cálculo de interseções e áreas:', estimated_crs)
+gdf = gdf.to_crs(estimated_crs)
+
+fix_geoms(gdf)
+gdf.sindex
+
+gdf.to_file(r"Resultados\fixed_MS_products_gdf.gpkg", driver="GPKG")
+fixed_MS_products_gdf = gdf.copy()
+```
+
+```{python}
+#Comparando área original com a calculada após todas as correções:
+if verbose: 
+  print('Área total do MS no Quarto Inventário:', MS_products_gdf['area_ha'].sum())
+  print('Área total do MS no Quarto Inventário, excluindo registros sem município:', fixed_MS_products_gdf['area_ha'].sum())
+
+# FALTA: Incluir a diferença de área por recálculo na Tabela 2 do relatório, e explicar porque foi necessário.
+  print('Área total do MS após exclusão de registros sem município e ajuste de CRS:', fixed_MS_products_gdf['geometry'].area.sum()/1e4)
+```
+
+## Calculando fatores de emissão médios e incertezas
+
+Calculamos fatores médios de emissão líquida média anual por ha por mudança de classe de uso do IPCC no total do inventário, para cada bioma e município, e algumas estatísticas básicas para avaliação qualitativa da incerteza adicionada quando se perde o detalhe das 26 classes usadas pelo Quarto Inventário Nacional:
+
+### Definindo funções:
+
+```{python}
+def weighted_quantile_linear(values, weights, quantile):
+  """
+  Calculates the specified quantile of a list of values with associated weights.
+
+  Args:
+    values: A list of numerical values.
+    weights: A list of weights corresponding to the values. 
+             Must have the same length as values.
+    quantile: The desired quantile (between 0 and 1).
+
+  Returns:
+    The calculated quantile value.
+  """
+
+  # Sort values and corresponding weights in ascending order
+  sorted_indices = np.argsort(values)
+  values = np.array(values)[sorted_indices]
+  weights = np.array(weights)[sorted_indices]
+
+  # Calculate cumulative weights
+  cumulative_weights = np.cumsum(weights)
+
+  # Find the index of the first value where the cumulative weight exceeds the quantile
+  target_weight = quantile * np.sum(weights)
+  idx = np.searchsorted(cumulative_weights, target_weight, side='right')
+
+  # Handle edge cases:
+  if idx == 0:
+    return values[0]
+  elif idx == len(values):
+    return values[-1]
+
+  # Perform linear interpolation
+  weight_below = cumulative_weights[idx - 1]
+  weight_above = cumulative_weights[idx]
+  value_below = values[idx - 1]
+  value_above = values[idx]
+  return value_below + (target_weight - weight_below) * (value_above - value_below) / (weight_above - weight_below)
+```
+
+```{python}
+# MELHORIA: Fazer funcionar o spline, como alternativa à interpolação linear.
+def weighted_quantile_spline(values, weights, quantile):
+    """
+    Calculates the specified quantile of a list of values with associated weights,
+    using spline interpolation.
+
+    Args:
+        values: A list of numerical values.
+        weights: A list of weights corresponding to the values.
+                 Must have the same length as values.
+        quantile: The desired quantile (between 0 and 1).
+
+    Returns:
+        The calculated quantile value.
+    """
+
+    # Sort values and corresponding weights in ascending order
+    sorted_indices = np.argsort(values)
+    values = np.array(values)[sorted_indices]
+    weights = np.array(weights)[sorted_indices]
+
+    # Calculate cumulative weights
+    cumulative_weights = np.cumsum(weights)
+
+    # Normalize cumulative weights to the range [0, 1]
+    normalized_cumulative_weights = cumulative_weights / cumulative_weights[-1]
+
+    # Create spline interpolation function
+    f = interp1d(normalized_cumulative_weights, values, kind='quadratic', bounds_error=False, fill_value=(values[0], values[-1]))
+
+    # Calculate the quantile
+    return f(quantile)
+```
+
+```{python}
+# MELHORIA: Renomear. Definir se esta e outras funções usadas só uma vez por outra serão definidas dentro do escopo da função que as chama.
+
+def apply2(group2, lowest_quantile = 0.025, highest_quantile = 0.975, weighted_quantile = weighted_quantile_linear):
+
+  unique_areas = group2[['fe', 'area_ha', 'duration']]
+
+  weights = unique_areas['duration'] * unique_areas['area_ha']
+  total_weights = weights.sum()
+  weights = weights / total_weights
+
+  average_fe = np.average(unique_areas['fe'], weights=weights)
+
+  sorted_fe_with_index = unique_areas[['fe']].sort_values('fe')
+  sorted_fe = sorted_fe_with_index['fe']
+  cumulative_weights = weights[sorted_fe_with_index.index].cumsum()
+
+  # MELHORIA: Incluir a opção mais simples abaixo (sem interpolação) como uma alternativa.
+  #lo = sorted_fe[cumulative_weights[cumulative_weights >= lowest_quantile].index[0]] if not cumulative_weights.empty else np.nan
+  #q1 = sorted_fe[cumulative_weights[cumulative_weights >= 0.25].index[0]] if not cumulative_weights.empty else np.nan
+  #median = sorted_fe[cumulative_weights[cumulative_weights >= 0.5].index[0]] if not cumulative_weights.empty else np.nan
+  #q3 = sorted_fe[cumulative_weights[cumulative_weights >= 0.75].index[0]] if not cumulative_weights.empty else np.nan
+  #hi = sorted_fe[cumulative_weights[cumulative_weights >= highest_quantile].index[0]] if not cumulative_weights.empty else np.nan
+
+  min_fe = unique_areas['fe'].min()
+  max_fe = unique_areas['fe'].max()
+
+  fe_list = sorted_fe.tolist()
+  weight_list = weights.tolist()
+
+  lo = max(min_fe, weighted_quantile(fe_list, weight_list, lowest_quantile))
+  q1 = max(min_fe, weighted_quantile(fe_list, weight_list, 0.25))
+  median = weighted_quantile(fe_list, weight_list, 0.5)
+  q3 = min(max_fe, weighted_quantile(fe_list, weight_list, 0.75))
+  hi = min(max_fe, weighted_quantile(fe_list, weight_list, highest_quantile))
+
+  total_area = total_weights/(2016-1994)
+
+  rows_count = len(unique_areas)
+
+  return pd.Series({
+    'min': min_fe,
+    'lo': lo,
+    'q1': q1,
+    'avg': average_fe,
+    'med': median,
+    'q3': q3,
+    'hi': hi,
+    'max': max_fe,
+    'area_ha': total_area,
+    'rows': rows_count})
+```
+
+```{python}
+def apply1(group1):
+
+  all_areas = []
+  year_list = ['1994', '2002', '2010', '2016']
+
+  for i, year in enumerate(year_list):
+    if i > 0:
+      year_ini = year_list[i-1]
+      ipccgr_ini_col = 'ipccgr_'+year_ini
+      year_fin = year_list[i]
+      ipccgr_fin_col = 'ipccgr_'+year_fin
+      period = year_ini[2:4]+year_fin[2:4]
+      fe_col = 'fe_'+period
+      el_col = 'el_'+period
+
+      areas = (group1[[ipccgr_ini_col, ipccgr_fin_col, fe_col, 'area_ha']]
+        .rename(columns={
+          ipccgr_ini_col: 'ipccgr_ini', 
+          ipccgr_fin_col: 'ipccgr_fin', 
+          fe_col: 'fe'}))
+      
+      if areas.empty: continue
+      areas['duration'] = int(year_fin) - int(year_ini)
+      all_areas.append(areas)
+
+  if len(all_areas) == 0: return
+
+  all_areas = pd.concat(all_areas, ignore_index = True)
+
+  return all_areas.groupby(['ipccgr_ini', 'ipccgr_fin'], observed=True).apply(apply2, include_groups=False)
+```
+
+### Sobrepondo ZEE aos dados do Quarto Inventário:
+
+Sobrepusemos os polígonos de ZEE-MS aos do Quarto Inventário Nacional e recalculamos as áreas dos polígonos resultado da sobreposição das ZEE-MS aos registros do Quarto Inventário Nacional e recalculamos as emissões a partir dos fatores de emissão médios anuais por ha para cada registro lido do Quarto Inventário Nacional.
+
+```{python}
+gdf = gpd.read_file(r"Downloads\zonas finais\zonas_novas2.dbf", engine="pyogrio", use_arrow=True)
+gdf['SIGLA'] = gdf['SIGLA'].astype('category')
+gdf = gdf.drop([ 'ID', 'ZONAS', 'AREA_KILOM', 'HECTARES', 'PERIMETER_', 'LONGITUDE',
+  'ACRES', 'AREA_KIL_1', 'PERIMETER1', 'AREA_KIL_2', 'PERIMETER2',
+  'AREA_KIL_3', 'PERIMETER3', 'AREA_KIL_4', 'PERIMETER4', 'AREA_METER',
+  'PERIMETER5', 'AREA_MET_1', 'PERIMETER6', 'AREA_MET_2', 'PERIMETER7', 'area'], axis=1)
+
+fix_geoms(gdf)
+gdf.sindex
+
+gdf.to_file(r"Resultados\MS_ZEE_gdf.gpkg", driver="GPKG")
+MS_ZEE_gdf = gdf.copy()
+
+gdf = gpd.overlay(
+  fixed_MS_products_gdf,
+  MS_ZEE_gdf.to_crs(fixed_MS_products_gdf.crs), 
+  how='intersection', 
+  keep_geom_type=True)
+
+fix_geoms(gdf)
+gdf.sindex
+
+gdf['area_ha'] = gdf['geometry'].area/1e4
+
+gdf['el_1016'] = gdf['fe_1016'] * gdf['area_ha'] * (2016-2010)   
+gdf['el_0210'] = gdf['fe_0210'] * gdf['area_ha'] * (2010-2002)  
+gdf['el_9402'] = gdf['fe_9402'] * gdf['area_ha'] * (2002-1994)  
+
+gdf.to_file(r"Resultados\MS_ZEE_products_gdf.gpkg", driver="GPKG")
+MS_ZEE_products_gdf = gdf.copy()
+
+# FALTA: Incluir na tabela 2 as diferenças em área e emissões por conta da intercessão com ZEE-MS.
+```
+
+```{python}
+#Conferindo totais:
+if verbose:
+
+  print('MS_ZEE_gdf, CRS lido:', MS_ZEE_gdf.crs, ', CRS estimado:', MS_ZEE_gdf.estimate_utm_crs(), ', CRS usado:', fixed_MS_products_gdf.crs)
+
+  for gdf in [MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf]:
+    print(gdf['area_ha'].sum())
+
+  for gdf in [fixed_MS_products_gdf, MS_ZEE_products_gdf]:
+    print(gdf['geometry'].area.sum()/1e4)
+
+  for el in ['el_9402', 'el_0210', 'el_1016']:
+    for gdf in [MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf]:
+      print(gdf[el].sum())
+```
+
+### Calculando fatores médios para as classes do IPCC por bioma, município e ZEE-MS:
+
+```{python}
+df = (MS_ZEE_products_gdf
+  .groupby(['SIGLA', 'bioma', 'mun_geocod'], observed=True)
+  .apply(apply1, include_groups=False)
+  .reset_index())
+df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_factors_df.csv", index=False)
+MS_ZEE_emission_factors_df = df.copy()
+```
+
+```{python}
+if verbose:
+
+  #Conferindo totais:
+  for gdf in [
+    MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf, MS_ZEE_emission_factors_df]:
+    print(gdf['area_ha'].sum())
+
+  for gdf in [MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf]:
+    print(gdf['el_9402'].sum() + gdf['el_0210'].sum() + gdf['el_1016'].sum())
+
+  el_avg = MS_ZEE_emission_factors_df['avg'] * MS_ZEE_emission_factors_df['area_ha'] * (2016-1994)
+  print(el_avg.sum())
+
+  # Mais alguns testes de consistência:
+  df = MS_ZEE_emission_factors_df
+  print(len(df[
+    (df['min'] > df['lo'])  |
+    (df['lo']  > df['q1'])  |
+    (df['q1']  > df['med']) |
+    (df['q3']  < df['med']) |
+    (df['hi']  < df['q3'])  |
+    (df['max'] < df['hi'])  |
+    (df['min'] > df['avg']) |
+    (df['max'] < df['avg'])]))
+```
+
+### Calculando fatores médios para as classes do IPCC por ZEE-MS:
+
+```{python}
+MS_ZEE_products_gdf = gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+```
+
+```{python}
+df = (MS_ZEE_products_gdf
+  .groupby(['SIGLA'], observed=True)
+  .apply(apply1, include_groups=False)
+  .reset_index())
+df.to_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv", index=False)
+MS_ZEE_1994_2016_emissions_df = df.copy()
+```
+
+### Boxplot de emissões por ZEE, 1994-2016:
+
+```{python}
+def plot_boxplot_grid(df):
+  """
+  Plots a grid of boxplots based on data in a Pandas DataFrame.
+
+  Args:
+    df: A Pandas DataFrame with columns 'ZEE', 'IPCC', 'min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max'.
+  """
+
+  def IPCC_label(row):
+
+    ipcc_label = {
+      'Agricultura': 'Ag',
+      'Campo ou Pastagem': 'Cp',
+      'Floresta': 'Fl',
+      'Área construída': 'Ac',
+      'Áreas alagadas': 'Al',
+      'Outros': 'Ou'}
+
+    return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])} -> {ipcc_label.get(row['ipccgr_fin'], row['ipccgr_fin'])}"
+
+  df = df[(df['min']!=0) | (df['max']!=0)] 
+  df = df.rename(columns={'SIGLA':'ZEE'})
+  df['IPCC'] = df.apply(IPCC_label, axis=1)
+  df = df.sort_values(by=['ZEE', 'avg'], ascending=[True, False])
+
+  zee_categories = sorted(df['ZEE'].unique())
+  n_zees = len(zee_categories)
+
+  subplots_per_column = 2
+  fig, axes = plt.subplots(
+    (n_zees + 1) // subplots_per_column if n_zees > 1 else 1, 
+    subplots_per_column, 
+    figsize=(20, 30))
+  axes = axes.flatten()
+
+  for i, zee in enumerate(zee_categories):
+    zee_data = df[df['ZEE'] == zee]
+    ipcc_labels = zee_data['IPCC'].tolist()
+    box_stats = []
+    for index, data in zee_data.iterrows():
+      box_stats.append({
+        'label': data['IPCC'],
+        'mean': data['avg'],
+        'med': data['med'],
+        'facecolor': 'red',
+        'edgecolor': 'red',
+        'mediancolor': 'black',
+        'medianwidth': 20,
+        'q1': data['q1'],
+        'q3': data['q3'],
+        'whislo': data['min'],
+        'whishi': data['max'],
+        'fliers': [],
+      })
+
+    axes[i].bxp(
+      box_stats,
+      showmeans=True, meanline=True,
+      meanprops=dict(
+        #marker='o', 
+        #markerfacecolor='red', 
+        #markeredgecolor='red', 
+        #markersize=1,
+        linewidth=2,
+        linestyle='--', 
+        color='red'),  
+      medianprops=dict(
+        color='black', 
+        linewidth=2),
+      showfliers=False)
+    axes[i].set_title(f"{zee}")
+    axes[i].set_xticklabels(ipcc_labels, rotation=45, ha='right')
+    axes[i].set_ylabel("Emissões estimadas")
+
+  plt.tight_layout()
+  plt.show()
+```
+
+```{python}
+df = MS_ZEE_emission_factors_df.copy()
+for col in ['min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max']: 
+  df[col] = df[col] * gdf['area_ha']
+
+MS_ZEE_emission_totals_df = (df
+  .groupby(['SIGLA', 'ipccgr_ini', 'ipccgr_fin'], observed = True)
+  [['min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max']].sum()
+  .reset_index())
+
+MS_ZEE_emission_totals_df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df.csv", index=False)
+```
+
+```{python}
+plot_boxplot_grid(MS_ZEE_1994_2016_emissions_df)
+```
+
+### Error bar plot para emissões por ZEE, 1994-2016:
+
+```{python}
+def plot_errorbar_grid(df):
+  """
+  Plots a grid of error bar plots based on data in a Pandas DataFrame.
+
+  Args:
+    df: A Pandas DataFrame with columns 'ZEE', 'IPCC', 'min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max'.
+  """
+
+  def IPCC_label(row):
+
+    ipcc_label = {
+      'Agricultura': 'Ag',
+      'Campo ou Pastagem': 'Cp',
+      'Floresta': 'Fl',
+      'Área construída': 'Ac',
+      'Áreas alagadas': 'Al',
+      'Outros': 'Ou'}
+
+    return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])} -> {ipcc_label.get(row['ipccgr_fin'], row['ipccgr_fin'])}"
+
+  df = df[(df['min']!=0) | (df['max']!=0)] 
+  df = df.rename(columns={'SIGLA':'ZEE'})
+  df['IPCC'] = df.apply(IPCC_label, axis=1)
+  df = df.sort_values(by=['ZEE', 'avg'], ascending=[True, False])
+
+  zee_categories = sorted(df['ZEE'].unique())
+  n_zees = len(zee_categories)
+
+  subplots_per_column = 2
+  fig, axes = plt.subplots(
+    (n_zees + 1) // subplots_per_column if n_zees > 1 else 1, 
+    subplots_per_column, 
+    figsize=(20, 30))
+  axes = axes.flatten()
+
+  for i, zee in enumerate(zee_categories):
+    zee_data = df[df['ZEE'] == zee]
+    ipcc_labels = zee_data['IPCC'].tolist()
+    
+    x = range(len(ipcc_labels))
+    y = zee_data['avg'].tolist()
+    yerr_lower = (zee_data['avg'] - zee_data['min']).tolist()
+    yerr_upper = (zee_data['max'] - zee_data['avg']).tolist()
+    yerr = [yerr_lower, yerr_upper]
+
+    axes[i].errorbar(
+      x, y, yerr=yerr, 
+      fmt='', capsize=5, 
+      linestyle='none', linewidth=1, color='black',
+      marker='o', markersize=5, markerfacecolor='black', markeredgecolor='black')
+
+    axes[i].set_title(f"{zee}")
+    axes[i].set_xticks(x)
+    axes[i].set_xticklabels(ipcc_labels, rotation=45, ha='right')
+    axes[i].set_ylabel("Emissões estimadas")
+
+  plt.tight_layout()
+  plt.show()
+
+# MELHORIA: usar plt.scatter para exibir, em cada error bar, os valores correspondentes a todas as 26 classes do Quarto inventário, distribuindo-as nas classes IPCC respectivas.
+```
+
+```{python}
+MS_ZEE_emission_totals_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df.csv")
+```
+
+```{python}
+plot_errorbar_grid(MS_ZEE_emission_totals_df)
+```
+
+```{python}
+plot_errorbar_grid(MS_ZEE_1994_2016_emissions_df)
+```
+
+## Calculando mudanças de uso da terra de 2001 a 2021 por ZEE x bioma x municípios
+
+### Sobrepondo ZEE, Biomas e municípios do MS:
+
+```{python}
+gdf = gpd.read_file('Downloads//MS_Municipios_2022//MS_Municipios_2022.dbf', engine="pyogrio", use_arrow=True)
+gdf['CD_MUN'] = gdf['CD_MUN'].astype('category')
+
+gdf = gdf.to_crs(estimated_crs)
+fix_geoms(gdf)
+gdf.sindex
+
+gdf.to_file("MS_Municipios_gdf.gpkg", driver="GPKG")
+MS_Municipios_gdf = gdf.copy()
+
+gdf = gpd.read_file('Downloads//zonas finais//zonas_novas2.dbf', engine="pyogrio", use_arrow=True)
+gdf['SIGLA'] = gdf['SIGLA'].astype('category')
+gdf = gdf.drop([ 'ID', 'ZONAS', 'AREA_KILOM', 'HECTARES', 'PERIMETER_', 'LONGITUDE',
+  'ACRES', 'AREA_KIL_1', 'PERIMETER1', 'AREA_KIL_2', 'PERIMETER2',
+  'AREA_KIL_3', 'PERIMETER3', 'AREA_KIL_4', 'PERIMETER4', 'AREA_METER',
+  'PERIMETER5', 'AREA_MET_1', 'PERIMETER6', 'AREA_MET_2', 'PERIMETER7', 'area'], axis=1)
+
+gdf = gdf.to_crs(estimated_crs)
+fix_geoms(gdf)
+gdf.sindex
+MS_ZEE_gdf = gdf.copy()
+
+gdf = gpd.overlay(MS_Municipios_gdf, MS_ZEE_gdf, how='intersection', keep_geom_type=True)
+fix_geoms(gdf)
+gdf.sindex
+MS_ZEE_municipios_gdf = gdf.copy()
+
+gdf = gpd.read_file('Downloads//Biomas//Biomas_250mil_2004//lm_bioma_250.dbf', engine="pyogrio", use_arrow=True)
+gdf['Bioma'] = gdf['Bioma'].astype('category')
+gdf = gdf.drop(['CD_Bioma'], axis=1)
+gdf = gdf.to_crs(estimated_crs)
+fix_geoms(gdf)
+gdf.sindex
+
+gdf = gpd.overlay(gdf, MS_ZEE_municipios_gdf, how='intersection', keep_geom_type=True)
+fix_geoms(gdf)
+gdf.sindex
+gdf['area_ha'] = gdf['geometry'].area/1e4  
+gdf.to_file("Biomas_ZEE_Municipios_gdf.gpkg", driver="GPKG")
+Biomas_ZEE_Municipios_gdf = gdf.copy()
+```
+
+### Lendo os mapeamentos de 2001 e 2021:
+
+```{python}
+gdf_file_list = [
+  { 'year': '2001',
+    'path': r"D:\CiCarne\FUNDECT_MS_ZERO\Fabio\municipios\vetores\2001\classificação final\classificação 2001.shp"},
+  { 'year': '2021',
+    'path': r"D:\CiCarne\FUNDECT_MS_ZERO\Fabio\municipios\vetores\2021\classificação geral\classificação 2021.shp"}]
+
+for gdf_file in gdf_file_list:
+  print(f"Lendo {gdf_file['year']} às {datetime.now().strftime("%H:%M:%S")}.")
+  gdf = gpd.read_file(gdf_file['path'], engine="pyogrio", use_arrow=True)
+
+  print(f"Calculando área de {gdf_file['year']} às {datetime.now().strftime("%H:%M:%S")}.")
+  gdf['CLASS'] = gdf['CLASS'].astype('category')
+  gdf = gdf.to_crs(estimated_crs)
+  fix_geoms(gdf)
+  gdf.sindex
+  gdf[f'area_ha'] = gdf['geometry'].area/1e4
+
+  print(f"Salvando {gdf_file['year']} às {datetime.now().strftime("%H:%M:%S")}.")
+  gdf.to_file(f"Resultados//Mapeamentos//classificacao_{gdf_file['year']}.gpkg", driver="GPKG")
+```
+
+### Sobrepondo biomas, ZEE, municípios aos mapeamentos:
+
+```{python}
+for year in ['2001','2021']:
+  gdf = gpd.read_file(f"Resultados//Mapeamentos//classificacao_{year}.gpkg", engine="pyogrio", use_arrow=True)
+  gdf = gdf.rename(columns={'CLASS': f"CLASS_{year}"})
+  gdf = gpd.overlay(Biomas_ZEE_Municipios_gdf, gdf, how='intersection', keep_geom_type=True)
+  gdf = gdf.drop(['ZONAS', 'area_ha_1', 'area_ha_2'], axis=1)
+  fix_geoms(gdf)
+  gdf.sindex
+  gdf['area_ha'] = gdf['geometry'].area/1e4 
+  gdf.to_file(f"Resultados//Mapeamentos//classificacao_{year}_mun.gpkg", driver="GPKG")
+```
+
+```{python}
+classificacao_2001_mun = gpd.read_file('classificacao_2001_mun.gpkg', engine="pyogrio", use_arrow=True)
+classificacao_2021_mun = gpd.read_file('classificacao_2021_mun.gpkg', engine="pyogrio", use_arrow=True)
+```
+
+### Detectando as mudanças de uso da terra nos mapeamentos de 2001 e 2021, por ZEE, biomas e municípios:
+
+```{python}
+zee_list = sorted(classificacao_2001_mun['SIGLA'].unique())
+
+for zee in zee_list:
+  if verbose: print(f"Starting intersections for {zee} at {datetime.now().strftime('%H:%M:%S')}.")
+  gdf = key_intersection(
+    classificacao_2001_mun[classificacao_2001_mun['SIGLA'] == zee], 
+    classificacao_2021_mun[classificacao_2021_mun['SIGLA'] == zee], 
+    ['SIGLA', 'Bioma', 'CD_MUN'])
+  gdf = gdf.drop([
+    'Bioma_2', 'Código Município Completo_2', 'SIGLA_2'], axis=1)
+
+  gdf = gdf.rename(columns={
+    'Bioma_1':'Bioma', 
+    'Código Município Completo_1':'Código Município Completo', 
+    'SIGLA_1', 'SIGLA'}) 
+
+  gdf.sindex
+  gdf['area_ha'] = gdf['geometry'].area/1e4
+  gdf.to_file(f"mudanca_2001_2021_{zee}.gpkg", driver="GPKG")
+  if verbose: print(f"Ended intersections for {zee} at {datetime.now().strftime('%H:%M:%S')}.")
+```
+
+## Atribuindo os fatores de emissão médios anuais:
+
+```{python}
+ipcc_group_before = ['agua e area umida', 'assentamento urbano', 'floresta', 'lavoura', 'outros', 'pastagem']
+ipcc_group_after = ['Áreas alagadas', 'Área construída', 'Floresta', 'Agricultura', 'Outros', 'Campo ou Pastagem']
+
+df = pd.read_csv(
+  r"Resultados\Emissoes\MS_ZEE_emission_factors_df.csv",
+  dtype={
+    'bioma': str,
+    'mun_geocod': 'category',
+    'SIGLA': 'category',
+    'ipccgr_ini': 'category',
+    'ipccgr_fin': 'category',
+    'min': float,
+    'lo': float,
+    'q1': float,
+    'avg': float,
+    'med': float,
+    'q3': float,
+    'hi': float,
+    'max': float,
+    'area_ha': float,
+    'rows': int}
+    ).drop(['rows', 'area_ha'], axis=1)
+
+df['bioma'] = df['bioma'].replace('Mata Atlantica', 'Mata Atlântica').astype('category')
+
+emissions_2001_2021_df = pd.DataFrame(columns=df.columns)
+
+zee_list = sorted(df['SIGLA'].unique())
+for zee in zee_list:
+
+  if verbose: print(f"Lendo mudanças em {zee} às {datetime.now().strftime('%H:%M:%S')}.")
+
+  # MELHORIA: para reduzir espaço ocupado na memória, ler como df, sem geometria.
+  gdf = gpd.read_file(f"Resultados//Mudancas//mudanca_2001_2021_{zee}.gpkg", engine="pyogrio", use_arrow=True)
+
+  if verbose: print(f"Ajustando nomes de classes em {zee} às {datetime.now().strftime('%H:%M:%S')}.")
+
+  gdf = gdf.drop([
+    'Bioma_2', 'Código Município Completo_2', 'SIGLA_2'], axis=1)
+
+  gdf = gdf.rename(columns={
+    'Bioma_1':'Bioma', 
+    'Código Município Completo_1':'Código Município Completo', 
+    'SIGLA_1': 'SIGLA'}) 
+
+  # MELHORIA: fazer este e outros ajustes semelhantes o mais cedo possível no processo.
+  gdf['CLASS_2001'] = gdf['CLASS_2001'].replace(ipcc_group_before, ipcc_group_after)
+  gdf['CLASS_2021'] = gdf['CLASS_2021'].replace(ipcc_group_before, ipcc_group_after)
+
+  if verbose: print(f"Aplicando fatores às áreas em {zee} às {datetime.now().strftime('%H:%M:%S')}.")
+
+  # MELHORIA: padronizar nomes de colunas o mais cedo possível no processo.
+  gdf = pd.merge(
+    gdf, df[df['SIGLA'] == zee],
+      left_on=['SIGLA', 'Bioma', 'Código Município Completo', 'CLASS_2001', 'CLASS_2021'],
+      right_on=['SIGLA', 'bioma', 'mun_geocod', 'ipccgr_ini','ipccgr_fin'])
+
+  for col in ['min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max']: gdf[col] = gdf[col] * gdf['area_ha']
+
+  print(emissions_2001_2021_df.columns)
+  print(gdf.drop(['geometry'], axis=1).columns)
+
+  emissions_2001_2021_df = pd.concat([
+    emissions_2001_2021_df, 
+    gdf.drop(['geometry'], axis=1)], 
+    ignore_index=True)
+
+  print(len(emissions_2001_2021_df)) 
+  
+  if verbose: print(f"{zee} concluída às {datetime.now().strftime('%H:%M:%S')}.")
+
+df = (emissions_2001_2021_df
+  .groupby(['SIGLA', 'ipccgr_ini', 'ipccgr_fin'], observed=True)
+  [['min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max', 'area_ha']].sum()
+  .sort_values(by=['SIGLA', 'avg'], ascending=[True, False])
+  .reset_index())
+
+df.to_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv", index=False)
+emissions_2001_2021_total_df = df.copy()
+```
+
+```{python}
+plot_boxplot_grid(emissions_2001_2021_total_df)
+```
+
+```{python}
+plot_errorbar_grid(emissions_2001_2021_total_df)
+```
+
+### Imprimindo as mudanças de uso da terra por ZEE
+
+```{python}
+df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
+category_order = ["Floresta", "Campo ou Pastagem", "Agricultura", "Áreas alagadas", "Área construída", "Outros"]
+df['ipccgr_ini'] = pd.Categorical(df['ipccgr_ini'], categories=category_order, ordered=True)
+df['ipccgr_fin'] = pd.Categorical(df['ipccgr_fin'], categories=category_order, ordered=True)
+
+(df.pivot_table(
+  observed=True,
+  values='area_ha', 
+  index=['ipccgr_ini', 'ipccgr_fin'], 
+  columns='SIGLA', 
+  aggfunc='sum')
+  .rename_axis(columns='ZEE', index=['2001', '2021'])
+  .fillna(0)
+  .map(lambda y: '-' if y == 0 else "{:,.3f}".format(y)))
+```
+
+## Exibindo gráficos
+
+```{python}
+color_map = {
+    'agua e area umida': 'blue',
+    'pastagem': 'limegreen',
+    'floresta': 'darkgreen',
+    'lavoura': 'orange',
+    'assentamento urbano': 'grey',
+    'outros': 'black'}
+
+gdf['color'] = gdf['CLASS'].map(color_map)
+
+# Plot the GeoDataFrame using the 'color' column
+fig, ax = plt.subplots(figsize=(10, 6))
+gdf.plot(color=gdf['color'], ax=ax)
+
+legend_elements = [Patch(facecolor=color, edgecolor='none', label=class_name) 
+                   for class_name, color in color_map.items()]
+
+#ax.legend(handles=legend_elements, title='CLASS')
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude") 
+
+plt.show()
+```
+
+# Backup (Código não usado no artigo)
+
+## Validações diversas
+
+```{python}
+print("Percentage of valid geometries found:", 100*len(gdf.is_valid)/len(gdf), "%") 
+```
+
+```{python}
+gdf_counts = gdf['geometry'].value_counts()
+multiple_geometry_values = gdf_counts[gdf_counts>1].to_frame(name = '# rows').index.tolist()
+multiple_geometry = gdf['geometry'].isin(multiple_geometry_values)
+print("Geometries duplicated", gdf[multiple_geometry]['geometry'].type.value_counts())
+```
+
+## Lendo arquivos em nível de município
+
+```{python}
+class FileSet:
+    def __init__(self, name, directory_to_process, file_extension, column_list, class_column):
+        self.name = name
+        self.directory_to_process = directory_to_process
+        self.file_extension = file_extension
+        self.column_list = column_list
+        self.class_column = class_column
+```
+
+```{python}
+file_sets = [
+  FileSet(name="2001",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Fabio\\municipios\\vetores\\2001\\classificação municipios\\final", 
+    file_extension = ".dbf",
+    column_list = ['CLASS', 'geometry'],
+    class_column = ['CLASS']),
+
+  FileSet(name="2021",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Fabio\\municipios\\vetores\\2021\\classificação municipios", 
+    file_extension = ".dbf",
+    column_list = ['Id', 'gridcode', 'Class_Name', 'geometry'],
+    class_column = ['Class_Name']),
+
+  FileSet(name="2021_fixed",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Amanda\\downloads\\CARBNO MS_AMANDA\\municipios",
+    file_extension = ".dbf",
+    column_list = ['Geocodigo', 'Municipio', 'UCS', 'Hectare', 'CATEGORIA', 'geometry'],
+    class_column = ['UCS', 'CATEGORIA'])]
+```
+
+```{python}
+for file_set in file_sets[2:3]:
+
+  print(f"Processing {file_set.name} at {datetime.now().strftime("%H:%M:%S")}:")
+  for file_path in Path(file_set.directory_to_process).rglob(f"*{file_set.file_extension}"): 
+    city = Path(file_path).stem
+    gdf = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)
+
+    print(f"{city} files read at {datetime.now().strftime("%H:%M:%S")}.")
+
+    gdf_column_list = gdf.columns.tolist()
+    if gdf_column_list != file_set.column_list:
+      print(f"Files for {city} have a different column list:", gdf_column_list)
+
+    gdf_group = gdf.groupby(gdf_column_list).size()
+    dup = len(gdf_group[gdf_group > 1])
+    if dup > 1: 
+      print(f"Files for {city} have {dup} duplicated geometry:")
+
+    gpk = gdf.to_crs(estimated_crs).dissolve(by=file_set.class_column)
+    print(f"{city} file dissolved at {datetime.now().strftime("%H:%M:%S")}.")
+
+    gpk['area_ha'] = gpk['geometry'].area/1e4
+    print(f"{city} area calculated at {datetime.now().strftime("%H:%M:%S")}.")
+
+    gpk.to_file(f"Mapeamento//{file_set.name}//{city}.gpkg", driver="GPKG")
+    print(f"{city} file saved at {datetime.now().strftime("%H:%M:%S")}.")
+
+  print(f"{file_set.name} processed at {datetime.now().strftime("%H:%M:%S")}.")
+```
+
+```{python}
+for file_set in file_sets:
+  all_class_values = set()
+  print(f"Processing {file_set.name} looking for classes:")
+  for file_path in Path(file_set.directory_to_process).rglob(f"*{file_set.file_extension}"): 
+    city = Path(file_path).stem
+    class_values_list = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)[file_set.class_column].drop_duplicates().values
+    class_values = [tuple(row) for row in class_values_list]
+    print(f"Processed file: {city}", class_values)
+    all_class_values.update(class_values)
+  print(pd.DataFrame(
+    list(all_class_values), 
+    columns=file_set.class_column).sort_values(by=file_set.class_column))
+  print(pd.DataFrame(
+    list(all_class_values), 
+    columns=file_set.class_column).sort_values(by=file_set.class_column[::-1])[file_set.class_column[::-1]])
+```
+
+```{python}
+for file_set in file_sets[0:1]:
+  all_class_list = pd.DataFrame(columns=file_set.class_column + ['rows'])
+  print(f"Processing {file_set.name} looking for classes:")
+  for file_path in Path(file_set.directory_to_process).rglob(f"*{file_set.file_extension}"): 
+    city = Path(file_path).stem
+    gdf = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)
+    class_list = gdf.groupby(file_set.class_column).size().to_frame(name="rows").reset_index()
+    all_class_list = pd.concat([all_class_list, class_list], axis=0, ignore_index=True)
+    final_class_list = all_class_list.groupby(file_set.class_column)['rows'].sum().reset_index()
+  
+  print(final_class_list.sort_values(by=file_set.class_column))
+  print(final_class_list.sort_values(by=file_set.class_column[::-1])[file_set.class_column[::-1]])
+```
+
+```{python}
+file_sets = [
+  FileSet(name="2001",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Fabio\\geopackages\\2001\\dissolved_area",
+    file_extension = ".gpkg",
+    column_list = ['CLASS', 'municipio', 'area', 'geometry'],
+    class_column = ['CLASS', 'municipio']),
+
+  FileSet(name="2021",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Fabio\\geopackages\\2021\\dissolved_area",
+    file_extension = ".gpkg",
+    column_list = ['Class_Name', 'uso', 'Id', 'municipio', 'area', 'gridcode', 'geometry'],
+    class_column = ['Class_Name', 'uso']),
+
+  FileSet(name="2021_fixed",
+    directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Amanda\\geopackages\\EPSGoriginal\\dissolved",
+    file_extension = ".gpkg",
+    column_list = ['Municipio', 'CATEGORIA', 'UCS', 'Hectare', 'area', 'geometry'],
+    class_column = ['CATEGORIA', 'UCS'])]
+```
+
+```{python}
+area_list = pd.DataFrame(columns=['ano', 'municipio', 'area'])
+for file_set in file_sets:
+  print(f"Summing city area for {file_set.name}:")
+  for file_path in Path(file_set.directory_to_process).rglob(f"*{file_set.file_extension}"): 
+    city = Path(file_path).stem
+    area = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)['area'].sum()
+    #hectare = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)['Hectare'].sum()
+    #print(city, area)
+    area_list.loc[len(area_list)] = [file_set.name, city, area]
+
+area_list.to_excel('area_list.xlsx', index=False) 
+```
+
+```{python}
+def concatenate_geopackages(path):
+
+  print(f"Starting concatenation of {path} at", datetime.now().strftime("%H:%M:%S"))
+  
+  gpkg_files = glob.glob(f"{path}/*.gpkg")
+  if not gpkg_files: raise ValueError(f"No GeoPackages found in {path}")
+
+  gdfs = []
+  for gpkg_file in gpkg_files:
+ 
+    print(f"Starting file {gpkg_file} at", datetime.now().strftime("%H:%M:%S"))
+
+    try: gdfs.append(gpd.read_file(gpkg_file, engine="pyogrio", use_arrow=True))
+    except Exception as e: print(f"Error reading {gpkg_file}: {e}")
+
+  if not gdfs: raise ValueError("No GeoPackages could be read successfully.")
+
+  return pd.concat(gdfs, ignore_index=True)
+```
+
+```{python}
+print(gdf
+  .reset_index()
+  .groupby(['UCS', 'CATEGORIA'])
+  .agg(
+    Hectare = ("Hectare", "sum"),
+    area = ("area", "sum"),
+    count = ("index", "nunique"))
+  .reset_index())
+```
+
+## Lendo planilhas exportadas de "shapefiles"
+
+### Lendo arquivos xlsx
+
+... do MS para o Quarto Inventário Nacional, uma para cada um dos três biomas no MS:
+
+```{python}
+directory_to_process = "Tab_exportadas_shapes_UF\\"
+file_extension = ".xlsx"
+dfs = []
+for file_path in Path(directory_to_process).rglob(f"*{file_extension}"): 
+  print(f"Reading {file_path} at {datetime.now().strftime("%H:%M:%S")}:")
+  df = pd.read_excel(file_path, sheet_name=Path(file_path).stem) 
+  print(f"{file_path} read at {datetime.now().strftime("%H:%M:%S")} with columns:", df.columns)
+  dfs.append(new_df)
+```
+
+### Selecionando as colunas de interesse.
+
+```{python}
+columns_to_keep = [
+  'id', 'bioma',	'mun_geocod',	'mun_nome', 
+  'cagr_1994',	'cagr_2002', 'cagr_2010',	'cagr_2016',	
+  'area_ha', 
+  'el_9402',	'el_0210', 'el_1016']
+
+print(f"Start concat at {datetime.now().strftime("%H:%M:%S")}:")
+for i, df in enumerate(dfs):
+  if 'num_geocod' in df.columns: # fixing column name
+    df =  df.rename(columns={'num_geocod': 'mun_geocod'})
+    
+  dfs[i] = df[columns_to_keep]
+```
+
+### Concatenando tabelas lidas
+
+```{python}
+emissions_df = pd.concat(dfs, ignore_index = True)
+print(f"Concat done {datetime.now().strftime("%H:%M:%S")}:")
+```
+
+### Dando uma espiada no resultado
+
+```{python}
+print(emissions_df.head())
+print(len(emissions_df))
+```
+
+### Consertando caracteres acentuados e m nomes de municípios
+
+```{python}
+replacements = {'Ãƒ':'Ã', 'Ã‚':'Â', 'Ã”':'Ô', 'ÃŠ':"Ê", 'Ã':'Á', 'Ã':'Í', 'Ã‰':'É', 'Ã“': 'Ó'}
+for old, new in replacements.items():
+  emissions_df['mun_nome'] = emissions_df['mun_nome'].str.replace(old, new, regex=False) 
+```
+
+### Detectando polígonos em municípios não identificados
+
+```{python}
+unknown_city = emissions_df['mun_geocod'].isna() | emissions_df['mun_nome'].isna()
+print(emissions_df[unknown_city])
+```
+
+### Expandindo opções de impressão
+
+```{python}
+pd.set_option('display.max_rows', 200)
+pd.set_option('display.max_columns', 20) 
+pd.set_option('display.width', 1000)
+pd.set_option('display.max_colwidth', None)
+```
+
+### Espiando totais por município
+
+```{python}
+print(emissions_df
+  .reset_index()
+  .groupby(['mun_geocod', 'mun_nome'], dropna=False)
+  .agg(
+    area = ("area_ha", "sum"),
+    emissoes_liquidas = ("el_1016", "sum"),
+    count = ("index", "nunique"))
+  .reset_index())
+```
+
+## Lendo "shapefiles" completos (i.e., todos os estados) dos três biomas de interesse
+
+### Lendo shapefiles e salvando geopackages
+
+```{python}
+def read_shapefiles_into_separate_geopackages(directory, output_directory):
+    """
+    Reads all shapefiles (including zipped ones) found below a directory 
+    and saves each one as a separate GeoPackage in a specified output directory.
+
+    Args:
+        directory: The path to the directory containing the shapefiles.
+        output_directory: The path to the directory where GeoPackages will be saved.
+    """
+
+    # Ensure output directory exists
+    os.makedirs(output_directory, exist_ok=True)
+
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith(".shp"):
+                shp_path = os.path.join(root, file)
+                try:
+                    gdf = gpd.read_file(shp_path, engine="pyogrio", use_arrow=True)
+                    base_name = os.path.splitext(file)[0]
+                    output_gpkg = os.path.join(output_directory, f"{base_name}.gpkg")
+                    gdf.to_file(output_gpkg, driver="GPKG")
+                    print(f"Shapefile {file} saved as {output_gpkg}")
+                except Exception as e:
+                    print(f"Error reading/writing shapefile {shp_path}: {e}")
+
+            elif file.endswith(".zip"):
+                zip_path = os.path.join(root, file)
+                try:
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        temp_dir = os.path.join(os.getcwd(), "temp_shp_extraction")
+                        os.makedirs(temp_dir, exist_ok=True)
+
+                        for zip_info in zip_ref.infolist():
+                            if zip_info.filename.endswith(".shp"):
+                                shp_base_name = os.path.splitext(zip_info.filename)[0]
+
+                                # Extract ALL related files
+                                for inner_file in zip_ref.infolist():
+                                    if inner_file.filename.startswith(shp_base_name):
+                                        zip_ref.extract(inner_file, temp_dir)
+
+                                extracted_files = glob.glob(os.path.join(temp_dir, shp_base_name + "*"))
+
+                                try:
+                                    for extracted_file in extracted_files:
+                                        if extracted_file.endswith(".shp"):
+                                            gpd.io.file.SHAPE_RESTORE_SHX = 'YES'
+                                            gdf = gpd.read_file(extracted_file, engine="pyogrio", use_arrow=True)
+                                            output_gpkg = os.path.join(output_directory, f"{shp_base_name}.gpkg") # Output directory
+                                            gdf.to_file(output_gpkg, driver="GPKG")
+                                            print(f"Shapefile {zip_info.filename} (from {file}) saved as {output_gpkg}")
+                                            break
+                                finally:
+                                    pass
+
+                        shutil.rmtree(temp_dir)
+
+                except zipfile.BadZipFile as e:
+                    print(f"Error processing zip file {zip_path}: {e}")
+                except Exception as e:
+                    print(f"An unexpected error occurred: {e}")
+```
+
+```{python}
+directory_to_process = "D:\\CiCarne\\FUNDECT_MS_ZERO\\Quarto Inventário Nacional\\downloads\\Shapes completos (com emissoes)"
+output_directory = r"C:\Users\ferna\OneDrive\Documentos\GitHub\MS Carbono Zero\Geopackages completos"  # Where to save the GeoPackages
+
+read_shapefiles_into_separate_geopackages(directory_to_process, output_directory)
+print("Shapefiles saved as separate GeoPackages.")
+```
+
+### Selecionando as colunas e linhas de interesse em cada geopackage
+
+```{python}
+directory_to_process = r"C:\Users\ferna\OneDrive\Documentos\GitHub\MS Carbono Zero\Geopackages completos"
+file_extension = ".gpkg"
+gdfs = []
+columns_to_keep = [
+  'id', 'bioma', 'mun_geocod', 'mun_nome', 
+  'cagr_1994', 'cagr_2002', 'cagr_2010', 'cagr_2016',	
+  'area_ha', 
+  'el_9402',	'el_0210', 'el_1016',
+  'geometry']
+
+for file_path in Path(directory_to_process).rglob(f"*{file_extension}"): 
+  print(f"Reading {file_path} at {datetime.now().strftime("%H:%M:%S")}:")
+  gdf = gpd.read_file(file_path, engine="pyogrio", use_arrow=True)
+  if 'num_geocod' in gdf.columns: # fixing column name
+    gdf = gdf.rename(columns={'num_geocod': 'mun_geocod'})
+  #gdf = gdf[gdf['uf'] == 'MS'][columns_to_keep]
+  gdf = gdf[columns_to_keep]
+  gdfs.append(gdf)
+  print(f"{file_path} appended at {datetime.now().strftime("%H:%M:%S")}.")
+```
+
+### Concatenando os geopackages lidos
+
+```{python}
+print(f"Start concat at {datetime.now().strftime("%H:%M:%S")}:")
+emissions_gdf = pd.concat(gdfs, ignore_index = True)
+print(f"Concat done {datetime.now().strftime("%H:%M:%S")}:")
+```
+
+### Salvando o geopackage concatenado
+
+```{python}
+emissions_gdf.to_file("emissions_gdf.gpkg", driver="GPKG")
+```
+
+### Excluindo polígonos sem código de município e corrigindo o nome.
+
+```{python}
+unknown_city_gdf = emissions_gdf['mun_geocod'].isna()
+fixed_emissions_gdf = emissions_gdf[~unknown_city_gdf]
+fixed_emissions_gdf['mun_geocod'] = fixed_emissions_gdf['mun_geocod'].astype(int).astype(str).str.zfill(7)
+```
+
+### Recalculando a área de cada polígono a partir da geometria.
+
+```{python}
+fixed_emissions_gdf = fixed_emissions_gdf.to_crs(fixed_emissions_gdf.estimate_utm_crs())
+fixed_emissions_gdf['area_calc'] = fixed_emissions_gdf['geometry'].area
+```
+
+### Salvando para uso posterior
+
+```{python}
+fixed_emissions_gdf.to_file("fixed_emissions_gdf.gpkg", driver="GPKG")
+```
+
+### Dando uma olhada nos totais por município
+
+```{python}
+print(fixed_emissions_gdf
+  .groupby(['mun_geocod', 'mun_name'], dropna=False)
+  .agg(
+    area_ha = ("area_ha", "sum"),
+    area_calc = ("area_calc", "sum"),
+    el_1016 = ("el_1016", "sum"),
+    rows = ("id", "nunique")))
+```
+
+# FUTURO
+
+### Lendo regiões intermediária e imediata de MS:
+
+```{python}
+dtb_MS = pd.read_excel('RELATORIO_DTB_BRASIL_MUNICIPIO.xls', skiprows=6, header=0,
+    dtype={
+      'UF': 'category', 'Nome_UF': 'category', 
+      'Região Geográfica Intermediária': 'category', 
+      'Nome Região Geográfica Intermediária': 'category', 
+      'Região Geográfica Imediata': 'category',
+      'Nome Região Geográfica Imediata': 'category', 
+      'Município': 'category',
+      'Código Município Completo': 'category', 
+      'Nome_Município': 'category'})
+
+dtb_MS = dtb_MS[dtb_MS['Nome_UF'] == 'Mato Grosso do Sul']
+
+```
+
+### Download de arquivos
+
+#### Lista de municípios e regiões do MS segundo o Divisão Territorial Brasileira do IBGE
+
+A Divisão Territorial Brasileira do IBGE (DTB) mais atualizada pode ser encontrada em:
+
+https://www.ibge.gov.br/geociencias/organizacao-do-territorio/estrutura-territorial/23701-divisao-territorial-brasileira.html?=&t=downloads&utm_source=landing&utm_medium=explica&utm_campaign=codmun
+
+#### Uso e cobertura da terra no MS - planilha resumo do Quarto Inventário Nacional
+
+ms_uso_e_cobertura_da_terra.xlsx
+
+\<\<...\>\>
+
+## Performance
+
+### Dissolve
+
+aplicar já nos arquivos iniciais, recebidos, e após operações espaciais
+
+sort=False, observed=True, method="coverage" (ver manual)
+
+### fix_geoms()
+
+Dispensar nos casos em que não foi necessário.
+
+### Simplify
+
+Logo após dissolve, talvez em certos biomas (Pantanal), ZEE (idem) e municípios (Corumbá)
+
+### Outra CPU
+
+O outro DELL, com expansão de memória, cuSpatial, ou um desktop
+
+### Processamento paralelo
+
+NVDIA? multiple cores?
+
+### Salvar
+
+Após testes, apenas onde necessário, e liberar memória.
+
+### Box
+
+Por ZEE, bioma ou município, antes de dissolve ou intersection, combinado com outras ideias acima que tornem o uso de box eficiente.
+
+## Outras melhorias no código
+
+### Funções
+
+Encapsular código repetido em funções, também para melhor gerenciamento de memória.
+
+### is_valid_reason()
+
+Se necessário
+
+### Verbose
+
+Prints como opção nas funções
+
+### Armazenamento
+
+parquet, ou spark & dask
+
+## Estender processo
+
+### Processamento a partir das imagens
+
+Incluir no script o processamento a partir das imagens que deram origem aos shapefiles de mapeamento usados.
+
+### Download por API
+
+Substituir o download por API ou "scratch"
+
+## Open source
+
+### Github
+
+Publicar no Github
+
+### Quarto
+
+Trazer o texto do artigo para cá.
