@@ -115,7 +115,7 @@ Função para validar e corrigir geometrias.
 ```{python}
 def fix_geoms(gdf):
 
-  # FALTA INCLUIR RETURN e PRINT COM QTDE DE REGISTROS LIDOS, CORRIGIDOS, E INVÁLIDOS.
+  # MELHORIA: INCLUIR RETURN e PRINT COM QTDE DE REGISTROS LIDOS, CORRIGIDOS, E INVÁLIDOS.
 
   mask_invalid = ~gdf.geometry.is_valid
 
@@ -289,6 +289,9 @@ MS_products_gdf = gpd.read_file(r"Resultados\MS_products_gdf.gpkg", engine="pyog
 ```
 
 ```{python}
+
+# Tabela 2
+
 no_mun_geocod = (MS_products_gdf['mun_geocod'] == '0') | MS_products_gdf['mun_geocod'].isna()
 
 summary = pd.DataFrame(
@@ -337,7 +340,7 @@ if verbose:
   print('Área total do MS no Quarto Inventário:', MS_products_gdf['area_ha'].sum())
   print('Área total do MS no Quarto Inventário, excluindo registros sem município:', fixed_MS_products_gdf['area_ha'].sum())
 
-# FALTA: Incluir a diferença de área por recálculo na Tabela 2 do relatório, e explicar porque foi necessário.
+# MELHORIA: Incluir a diferença de área por recálculo na Tabela 2 do relatório, e explicar porque foi necessário.
   print('Área total do MS após exclusão de registros sem município e ajuste de CRS:', fixed_MS_products_gdf['geometry'].area.sum()/1e4)
 ```
 
@@ -545,7 +548,7 @@ gdf['el_9402'] = gdf['fe_9402'] * gdf['area_ha'] * (2002-1994)
 gdf.to_file(r"Resultados\MS_ZEE_products_gdf.gpkg", driver="GPKG")
 MS_ZEE_products_gdf = gdf.copy()
 
-# FALTA: Incluir na tabela 2 as diferenças em área e emissões por conta da intercessão com ZEE-MS.
+# MELHORIA: Incluir na tabela 2 as diferenças em área e emissões por conta da intercessão com ZEE-MS.
 ```
 
 ```{python}
@@ -621,29 +624,32 @@ MS_ZEE_1994_2016_emissions_df = df.copy()
 ### Boxplot de emissões por ZEE, 1994-2016:
 
 ```{python}
-def plot_boxplot_grid(df):
+def ipcc_label(row):
+
+  ipcc_label = {
+    'Agricultura': 'Ag',
+    'Campo ou Pastagem': 'Cp',
+    'Floresta': 'Fl',
+    'Área construída': 'Ac',
+    'Áreas alagadas': 'Al',
+    'Outros': 'Ou'}
+
+  return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])} -> {ipcc_label.get(row['ipccgr_fin'], row['ipccgr_fin'])}"
+```
+
+```{python}
+def plot_boxplot_grid(df, lo = 'lo', hi = 'hi', x_label_func=ipcc_label, y_label= "Fatores de emissão (ton Co2eq/ha/ano)", y_fontsize = 12, x_fontsize = 12, y_tick_fontsize = 12, title_font_size = 12):
   """
   Plots a grid of boxplots based on data in a Pandas DataFrame.
 
   Args:
     df: A Pandas DataFrame with columns 'ZEE', 'IPCC', 'min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max'.
+    x_label_func: A function to generate labels for the boxplots. Defaults to the 'label' function.
   """
-
-  def IPCC_label(row):
-
-    ipcc_label = {
-      'Agricultura': 'Ag',
-      'Campo ou Pastagem': 'Cp',
-      'Floresta': 'Fl',
-      'Área construída': 'Ac',
-      'Áreas alagadas': 'Al',
-      'Outros': 'Ou'}
-
-    return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])} -> {ipcc_label.get(row['ipccgr_fin'], row['ipccgr_fin'])}"
 
   df = df[(df['min']!=0) | (df['max']!=0)] 
   df = df.rename(columns={'SIGLA':'ZEE'})
-  df['IPCC'] = df.apply(IPCC_label, axis=1)
+  df['label'] = df.apply(x_label_func, axis=1)
   df = df.sort_values(by=['ZEE', 'avg'], ascending=[True, False])
 
   zee_categories = sorted(df['ZEE'].unique())
@@ -658,11 +664,11 @@ def plot_boxplot_grid(df):
 
   for i, zee in enumerate(zee_categories):
     zee_data = df[df['ZEE'] == zee]
-    ipcc_labels = zee_data['IPCC'].tolist()
+    labels = zee_data['label'].tolist()
     box_stats = []
     for index, data in zee_data.iterrows():
       box_stats.append({
-        'label': data['IPCC'],
+        'label': data['label'],
         'mean': data['avg'],
         'med': data['med'],
         'facecolor': 'red',
@@ -671,8 +677,8 @@ def plot_boxplot_grid(df):
         'medianwidth': 20,
         'q1': data['q1'],
         'q3': data['q3'],
-        'whislo': data['min'],
-        'whishi': data['max'],
+        'whislo': data[lo],
+        'whishi': data[hi],
         'fliers': [],
       })
 
@@ -680,10 +686,6 @@ def plot_boxplot_grid(df):
       box_stats,
       showmeans=True, meanline=True,
       meanprops=dict(
-        #marker='o', 
-        #markerfacecolor='red', 
-        #markeredgecolor='red', 
-        #markersize=1,
         linewidth=2,
         linestyle='--', 
         color='red'),  
@@ -691,9 +693,11 @@ def plot_boxplot_grid(df):
         color='black', 
         linewidth=2),
       showfliers=False)
-    axes[i].set_title(f"{zee}")
-    axes[i].set_xticklabels(ipcc_labels, rotation=45, ha='right')
-    axes[i].set_ylabel("Emissões estimadas")
+    axes[i].set_title(f"{zee}", fontsize = title_font_size)
+    axes[i].set_xticklabels(labels, rotation=45, ha='right', fontsize = x_fontsize)
+    axes[i].set_ylabel(y_label, fontsize = y_fontsize)
+    axes[i].tick_params(axis='y', labelsize=y_tick_fontsize)
+    axes[i].yaxis.get_offset_text().set_fontsize(y_tick_fontsize)
 
   plt.tight_layout()
   plt.show()
@@ -713,84 +717,14 @@ MS_ZEE_emission_totals_df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df
 ```
 
 ```{python}
-plot_boxplot_grid(MS_ZEE_1994_2016_emissions_df)
+# Figura 2
+plot_boxplot_grid(MS_ZEE_1994_2016_emissions_df, lo='min', hi='max', x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
 ```
 
 ### Error bar plot para emissões por ZEE, 1994-2016:
 
 ```{python}
-def plot_errorbar_grid(df):
-  """
-  Plots a grid of error bar plots based on data in a Pandas DataFrame.
-
-  Args:
-    df: A Pandas DataFrame with columns 'ZEE', 'IPCC', 'min', 'lo', 'q1', 'avg', 'med', 'q3', 'hi', 'max'.
-  """
-
-  def IPCC_label(row):
-
-    ipcc_label = {
-      'Agricultura': 'Ag',
-      'Campo ou Pastagem': 'Cp',
-      'Floresta': 'Fl',
-      'Área construída': 'Ac',
-      'Áreas alagadas': 'Al',
-      'Outros': 'Ou'}
-
-    return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])} -> {ipcc_label.get(row['ipccgr_fin'], row['ipccgr_fin'])}"
-
-  df = df[(df['min']!=0) | (df['max']!=0)] 
-  df = df.rename(columns={'SIGLA':'ZEE'})
-  df['IPCC'] = df.apply(IPCC_label, axis=1)
-  df = df.sort_values(by=['ZEE', 'avg'], ascending=[True, False])
-
-  zee_categories = sorted(df['ZEE'].unique())
-  n_zees = len(zee_categories)
-
-  subplots_per_column = 2
-  fig, axes = plt.subplots(
-    (n_zees + 1) // subplots_per_column if n_zees > 1 else 1, 
-    subplots_per_column, 
-    figsize=(20, 30))
-  axes = axes.flatten()
-
-  for i, zee in enumerate(zee_categories):
-    zee_data = df[df['ZEE'] == zee]
-    ipcc_labels = zee_data['IPCC'].tolist()
-    
-    x = range(len(ipcc_labels))
-    y = zee_data['avg'].tolist()
-    yerr_lower = (zee_data['avg'] - zee_data['min']).tolist()
-    yerr_upper = (zee_data['max'] - zee_data['avg']).tolist()
-    yerr = [yerr_lower, yerr_upper]
-
-    axes[i].errorbar(
-      x, y, yerr=yerr, 
-      fmt='', capsize=5, 
-      linestyle='none', linewidth=1, color='black',
-      marker='o', markersize=5, markerfacecolor='black', markeredgecolor='black')
-
-    axes[i].set_title(f"{zee}")
-    axes[i].set_xticks(x)
-    axes[i].set_xticklabels(ipcc_labels, rotation=45, ha='right')
-    axes[i].set_ylabel("Emissões estimadas")
-
-  plt.tight_layout()
-  plt.show()
-
-# MELHORIA: usar plt.scatter para exibir, em cada error bar, os valores correspondentes a todas as 26 classes do Quarto inventário, distribuindo-as nas classes IPCC respectivas.
-```
-
-```{python}
 MS_ZEE_emission_totals_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df.csv")
-```
-
-```{python}
-plot_errorbar_grid(MS_ZEE_emission_totals_df)
-```
-
-```{python}
-plot_errorbar_grid(MS_ZEE_1994_2016_emissions_df)
 ```
 
 ## Calculando mudanças de uso da terra de 2001 a 2021 por ZEE x bioma x municípios
@@ -993,16 +927,106 @@ emissions_2001_2021_total_df = df.copy()
 ```
 
 ```{python}
-plot_boxplot_grid(emissions_2001_2021_total_df)
+emissions_2001_2021_total_df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
 ```
 
 ```{python}
-plot_errorbar_grid(emissions_2001_2021_total_df)
+# Figura 5
+plot_boxplot_grid(emissions_2001_2021_total_df, lo='min', hi='max', y_label = "Emissões (ton CO2eq/ano)", x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
+```
+
+### Encontrando as subclasses de classes permanentes com fe acima de q3
+
+```{python}
+MS_ZEE_products_gdf = gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+
+MS_ZEE_1994_2016_emissions_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv")
+```
+
+```{python}
+gdf = MS_ZEE_products_gdf
+gdf_list = []
+year_list = ['1994', '2002', '2010', '2016']
+for i, year in enumerate(year_list):
+  if i > 0:
+    year_ini = year_list[i-1]
+    ipccgr_ini = 'ipccgr_'+year_ini
+    cagr_ini = 'cagr_'+year_ini
+    year_fin = year_list[i]
+    ipccgr_fin = 'ipccgr_'+year_fin
+    cagr_fin = 'cagr_'+year_fin
+    period = year_ini[2:4]+year_fin[2:4]
+    fe = 'fe_'+period
+    el = 'el_'+period
+
+    gdf = MS_ZEE_products_gdf
+    gdf = (gdf[(gdf[el] > 0) &
+      (gdf[ipccgr_fin] == gdf[ipccgr_ini]) &
+      (gdf[ipccgr_ini].isin(['Floresta', 'Campo ou Pastagem']))]
+      [['SIGLA', 'bioma', 'mun_geocod', 
+      ipccgr_ini, cagr_ini, cagr_fin, fe, el, 'geometry']]
+      .rename(columns={
+        ipccgr_ini: 'ipccgr_ini', 
+        cagr_ini: 'cagr_ini', 
+        cagr_fin: 'cagr_fin', 
+        fe: 'fe',
+        el: 'el', 
+        cagr_ini: 'cagr_ini', 
+        cagr_fin: 'cagr_fin', 
+        fe: 'fe', 
+        el: 'el'}))
+
+    gdf['duration'] =  int(year_fin) - int(year_ini)
+
+    gdf['area_ha'] = gdf.geometry.area/1e4
+
+    gdf_list.append(gdf)
+
+gdf = pd.concat(gdf_list, ignore_index = True)
+```
+
+```{python}
+df = (gdf
+  .groupby(['SIGLA', 'ipccgr_ini','cagr_ini', 'cagr_fin'], observed=True)
+  .apply(apply2, include_groups=False)
+  .reset_index())
+```
+
+```{python}
+# Figura 6
+def cagr_label(row):
+
+  ipcc_label = {
+  'Agricultura': 'Ag',
+  'Campo ou Pastagem': 'Cp',
+  'Floresta': 'Fl',
+  'Área construída': 'Ac',
+  'Áreas alagadas': 'Al',
+  'Outros': 'Ou'}
+
+  return f"{ipcc_label.get(row['ipccgr_ini'], row['ipccgr_ini'])}:{row['cagr_ini']} -> {row['cagr_fin']}"
+
+plot_boxplot_grid(df, lo='min', hi='max', x_label_func = cagr_label)
+```
+
+```{python}
+df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_factors_df.csv", index=False)
+```
+
+```{python}
+fe_df = MS_ZEE_1994_2016_emissions_df
+fe_df = fe_df[fe_df['ipccgr_ini'] == fe_df['ipccgr_fin']].drop(['area_ha', 'rows'], axis=1)
+
+df = fe_df.merge(gdf, on=['SIGLA', 'ipccgr_ini'])
+
+print(df[df['el']>df['q3']].groupby(['SIGLA', 'ipccgr_ini', 'cagr_ini', 'cagr_fin'])[['el']].sum().reset_index())
 ```
 
 ### Imprimindo as mudanças de uso da terra por ZEE
 
 ```{python}
+# Tabela 3: Mudanças de uso da terra por ZEE do MS para o período 2001-2021, em ha. Fonte: Os autores.
+
 df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
 category_order = ["Floresta", "Campo ou Pastagem", "Agricultura", "Áreas alagadas", "Área construída", "Outros"]
 df['ipccgr_ini'] = pd.Categorical(df['ipccgr_ini'], categories=category_order, ordered=True)
@@ -1016,34 +1040,8 @@ df['ipccgr_fin'] = pd.Categorical(df['ipccgr_fin'], categories=category_order, o
   aggfunc='sum')
   .rename_axis(columns='ZEE', index=['2001', '2021'])
   .fillna(0)
-  .map(lambda y: '-' if y == 0 else "{:,.3f}".format(y)))
-```
-
-## Exibindo gráficos
-
-```{python}
-color_map = {
-    'agua e area umida': 'blue',
-    'pastagem': 'limegreen',
-    'floresta': 'darkgreen',
-    'lavoura': 'orange',
-    'assentamento urbano': 'grey',
-    'outros': 'black'}
-
-gdf['color'] = gdf['CLASS'].map(color_map)
-
-# Plot the GeoDataFrame using the 'color' column
-fig, ax = plt.subplots(figsize=(10, 6))
-gdf.plot(color=gdf['color'], ax=ax)
-
-legend_elements = [Patch(facecolor=color, edgecolor='none', label=class_name) 
-                   for class_name, color in color_map.items()]
-
-#ax.legend(handles=legend_elements, title='CLASS')
-ax.set_xlabel("Longitude")
-ax.set_ylabel("Latitude") 
-
-plt.show()
+  .map(lambda y: '-' if y == 0 else str("{:,.1f}".format(y))
+    .replace('.', ';').replace(',', '.').replace(';', ',')))
 ```
 
 # Backup (Código não usado no artigo)
@@ -1456,6 +1454,33 @@ print(fixed_emissions_gdf
     area_calc = ("area_calc", "sum"),
     el_1016 = ("el_1016", "sum"),
     rows = ("id", "nunique")))
+```
+
+## Exibindo gráficos
+
+```{python}
+color_map = {
+    'agua e area umida': 'blue',
+    'pastagem': 'limegreen',
+    'floresta': 'darkgreen',
+    'lavoura': 'orange',
+    'assentamento urbano': 'grey',
+    'outros': 'black'}
+
+gdf['color'] = gdf['CLASS'].map(color_map)
+
+# Plot the GeoDataFrame using the 'color' column
+fig, ax = plt.subplots(figsize=(10, 6))
+gdf.plot(color=gdf['color'], ax=ax)
+
+legend_elements = [Patch(facecolor=color, edgecolor='none', label=class_name) 
+                   for class_name, color in color_map.items()]
+
+#ax.legend(handles=legend_elements, title='CLASS')
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude") 
+
+plt.show()
 ```
 
 # FUTURO
