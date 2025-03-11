@@ -1,6 +1,6 @@
 ---
 title: "MS Carbono Zero - Uso da Terra, Mudança do Uso da Terra e Florestas"
-date: 2025-02-25
+date: 2025-03-10
 author:
   - name: Fernando Rodrigues Teixeira Dias
     orcid: 0000-0002-3739-0036
