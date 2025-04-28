@@ -717,6 +717,10 @@ MS_ZEE_emission_totals_df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df
 ```
 
 ```{python}
+MS_ZEE_1994_2016_emissions_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv")
+```
+
+```{python}
 # Figura 2
 plot_boxplot_grid(MS_ZEE_1994_2016_emissions_df, lo='min', hi='max', x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
 ```
@@ -931,7 +935,7 @@ emissions_2001_2021_total_df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_
 ```
 
 ```{python}
-# Figura 5
+# Figura 3
 plot_boxplot_grid(emissions_2001_2021_total_df, lo='min', hi='max', y_label = "Emissões (ton CO2eq/ano)", x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
 ```
 
@@ -993,7 +997,7 @@ df = (gdf
 ```
 
 ```{python}
-# Figura 6
+# Figura 4
 def cagr_label(row):
 
   ipcc_label = {
