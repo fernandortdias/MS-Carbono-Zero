@@ -289,8 +289,7 @@ MS_products_gdf = gpd.read_file(r"Resultados\MS_products_gdf.gpkg", engine="pyog
 ```
 
 ```{python}
-
-# Tabela 2
+# Registros sem municípios
 
 no_mun_geocod = (MS_products_gdf['mun_geocod'] == '0') | MS_products_gdf['mun_geocod'].isna()
 
@@ -553,19 +552,28 @@ MS_ZEE_products_gdf = gdf.copy()
 
 ```{python}
 #Conferindo totais:
+MS_ZEE_gdf = gpd.read_file(r"Resultados\MS_ZEE_gdf.gpkg", engine="pyogrio", use_arrow=True)
+
+fixed_MS_products_gdf = gpd.read_file(r"Resultados\fixed_MS_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+
+MS_products_gdf = gpd.read_file(r"Resultados\MS_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+
+MS_ZEE_products_gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+```
+```{python}
 if verbose:
 
   print('MS_ZEE_gdf, CRS lido:', MS_ZEE_gdf.crs, ', CRS estimado:', MS_ZEE_gdf.estimate_utm_crs(), ', CRS usado:', fixed_MS_products_gdf.crs)
 
   for gdf in [MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf]:
-    print(gdf['area_ha'].sum())
+    print('area_ha', gdf['area_ha'].sum())
 
   for gdf in [fixed_MS_products_gdf, MS_ZEE_products_gdf]:
-    print(gdf['geometry'].area.sum()/1e4)
+    print('geometry.area/1e4', gdf['geometry'].area.sum()/1e4)
 
   for el in ['el_9402', 'el_0210', 'el_1016']:
     for gdf in [MS_products_gdf, fixed_MS_products_gdf, MS_ZEE_products_gdf]:
-      print(gdf[el].sum())
+      print('gdf.el',  gdf[el].sum())
 ```
 
 ### Calculando fatores médios para as classes do IPCC por bioma, município e ZEE-MS:
@@ -717,11 +725,9 @@ MS_ZEE_emission_totals_df.to_csv(r"Resultados\Emissoes\MS_ZEE_emission_totals_df
 ```
 
 ```{python}
-MS_ZEE_1994_2016_emissions_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv")
-```
-
-```{python}
 # Figura 2
+MS_ZEE_1994_2016_emissions_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv")
+
 plot_boxplot_grid(MS_ZEE_1994_2016_emissions_df, lo='min', hi='max', x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
 ```
 
@@ -931,24 +937,21 @@ emissions_2001_2021_total_df = df.copy()
 ```
 
 ```{python}
-emissions_2001_2021_total_df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
-```
-
-```{python}
 # Figura 3
+emissions_2001_2021_total_df = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
+
 plot_boxplot_grid(emissions_2001_2021_total_df, lo='min', hi='max', y_label = "Emissões (ton CO2eq/ano)", x_fontsize=16, y_fontsize=16, y_tick_fontsize = 16, title_font_size = 16)
 ```
 
-### Encontrando as subclasses de classes permanentes com fe acima de q3
+### Áreas que permaneceram em Floresta ou Campo e Pastagem com emissões positivas
 
 ```{python}
-MS_ZEE_products_gdf = gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+# Figura 4
+
+MS_ZEE_products_gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
 
 MS_ZEE_1994_2016_emissions_df = pd.read_csv(r"Resultados\Emissoes\MS_ZEE_1994_2016_emissions_df.csv")
-```
 
-```{python}
-gdf = MS_ZEE_products_gdf
 gdf_list = []
 year_list = ['1994', '2002', '2010', '2016']
 for i, year in enumerate(year_list):
@@ -963,7 +966,7 @@ for i, year in enumerate(year_list):
     fe = 'fe_'+period
     el = 'el_'+period
 
-    gdf = MS_ZEE_products_gdf
+    gdf = MS_ZEE_products_gdf.copy()
     gdf = (gdf[(gdf[el] > 0) &
       (gdf[ipccgr_fin] == gdf[ipccgr_ini]) &
       (gdf[ipccgr_ini].isin(['Floresta', 'Campo ou Pastagem']))]
@@ -971,10 +974,6 @@ for i, year in enumerate(year_list):
       ipccgr_ini, cagr_ini, cagr_fin, fe, el, 'geometry']]
       .rename(columns={
         ipccgr_ini: 'ipccgr_ini', 
-        cagr_ini: 'cagr_ini', 
-        cagr_fin: 'cagr_fin', 
-        fe: 'fe',
-        el: 'el', 
         cagr_ini: 'cagr_ini', 
         cagr_fin: 'cagr_fin', 
         fe: 'fe', 
@@ -987,17 +986,12 @@ for i, year in enumerate(year_list):
     gdf_list.append(gdf)
 
 gdf = pd.concat(gdf_list, ignore_index = True)
-```
 
-```{python}
 df = (gdf
   .groupby(['SIGLA', 'ipccgr_ini','cagr_ini', 'cagr_fin'], observed=True)
   .apply(apply2, include_groups=False)
   .reset_index())
-```
 
-```{python}
-# Figura 4
 def cagr_label(row):
 
   ipcc_label = {
@@ -1046,6 +1040,27 @@ df['ipccgr_fin'] = pd.Categorical(df['ipccgr_fin'], categories=category_order, o
   .fillna(0)
   .map(lambda y: '-' if y == 0 else str("{:,.1f}".format(y))
     .replace('.', ';').replace(',', '.').replace(';', ',')))
+```
+
+### Comparando emissões médias anuais do Quarto Inventário e nossa estimativa de 2001-2010
+
+```{python}
+# Médias anuais do Quarto inventário, em todos os períodos.
+
+gdf = gpd.read_file(r"Resultados\MS_ZEE_products_gdf.gpkg", engine="pyogrio", use_arrow=True)
+```
+
+```{python}
+print('gdf.el',  "{:.3e}".format((gdf['el_9402'].sum() + gdf['el_0210'].sum() + gdf['el_1016'].sum())/(2016-2010+2010-2002+2002-1994)))
+```
+
+```{python}
+# Médias anuais de 2001 a 2021.
+
+df2 = pd.read_csv(r"Resultados\Emissoes\emissions_2001_2021_total_df.csv")
+#df2 = df2.drop(['min', 'lo', 'hi', 'max'], axis=1)
+
+print(df2.sum(numeric_only=True).map('{:.3e}'.format))
 ```
 
 # Backup (Código não usado no artigo)
